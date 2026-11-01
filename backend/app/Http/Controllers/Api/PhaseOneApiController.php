@@ -61,6 +61,158 @@ class PhaseOneApiController extends Controller
     }
 
     /**
+     * Get All Items Master Data for Dropdowns
+     */
+    public function getItems()
+    {
+        $items = DB::table('items')
+            ->select('id', 'code', 'name', 'type', 'inci_name', 'unit')
+            ->orderBy('name')
+            ->get();
+
+        return response()->json($items);
+    }
+
+    /**
+     * Warehouse Analytics & Storage Zones
+     */
+    public function getWarehouseStats()
+    {
+        $totalLots = DB::table('lots')->count();
+        $quarantineLots = DB::table('lots')->where('status', 'Quarantine')->count();
+        $approvedLots = DB::table('lots')->where('status', 'Approved')->count();
+        $rejectedLots = DB::table('lots')->where('status', 'Rejected')->count();
+
+        $expiring30 = DB::table('lots')
+            ->whereNotNull('expiry_date')
+            ->where('expiry_date', '<=', Carbon::now()->addDays(30))
+            ->where('expiry_date', '>=', Carbon::now())
+            ->count();
+
+        $expiring60 = DB::table('lots')
+            ->whereNotNull('expiry_date')
+            ->where('expiry_date', '<=', Carbon::now()->addDays(60))
+            ->count();
+
+        // Warehouse Zones
+        $zoneA = DB::table('lots')->where('storage_location', 'like', '%WH-A%')->count();
+        $zoneQ = DB::table('lots')->where('storage_location', 'like', '%WH-Q%')->count();
+        $zoneP = DB::table('lots')->where('storage_location', 'like', '%WH-P%')->count();
+        $zoneR = DB::table('lots')->where('storage_location', 'like', '%WH-R%')->count();
+
+        return response()->json([
+            'totalLots' => $totalLots,
+            'quarantineLots' => $quarantineLots,
+            'approvedLots' => $approvedLots,
+            'rejectedLots' => $rejectedLots,
+            'expiring30' => $expiring30,
+            'expiring60' => $expiring60,
+            'zones' => [
+                ['code' => 'WH-A', 'name' => 'Main Raw Materials Bay', 'count' => $zoneA, 'capacity' => 150, 'occupancy' => min(100, round(($zoneA / 150) * 100, 1)), 'status' => 'Active'],
+                ['code' => 'WH-Q', 'name' => 'Quarantine Isolation Area', 'count' => $zoneQ, 'capacity' => 30, 'occupancy' => min(100, round(($zoneQ / 30) * 100, 1)), 'status' => $zoneQ > 5 ? 'Priority QC' : 'Normal'],
+                ['code' => 'WH-P', 'name' => 'Packaging Materials Bay', 'count' => $zoneP, 'capacity' => 100, 'occupancy' => min(100, round(($zoneP / 100) * 100, 1)), 'status' => 'Active'],
+                ['code' => 'WH-R', 'name' => 'Rejected Material Cage', 'count' => $zoneR, 'capacity' => 20, 'occupancy' => min(100, round(($zoneR / 20) * 100, 1)), 'status' => 'Locked GMP'],
+            ],
+        ]);
+    }
+
+    /**
+     * Create New Goods Receipt (Always enters Quarantine per GMP!)
+     */
+    public function createGoodsReceipt(Request $request)
+    {
+        $itemId = $request->input('item_id');
+        $item = DB::table('items')->where('id', $itemId)->first();
+        if (!$item) {
+            return response()->json(['error' => 'Selected item not found'], 404);
+        }
+
+        $lotNumber = $request->input('lot_number');
+        if (empty($lotNumber)) {
+            $prefix = strtoupper(substr($item->code, 0, 3));
+            $lotNumber = $prefix . '-' . date('ymd') . '-' . rand(100, 999);
+        }
+
+        $location = $request->input('storage_location', 'WH-Q · Q01 · Bay 02');
+        $sourceDoc = $request->input('source_document', 'GR-' . date('Y') . '-' . rand(1000, 9999));
+        $supplier = $request->input('supplier_name', 'Certified Supplier');
+        $quantity = floatval($request->input('quantity', 100));
+
+        // Insert Lot in Quarantine
+        $lotId = DB::table('lots')->insertGetId([
+            'lot_number' => $lotNumber,
+            'item_id' => $item->id,
+            'status' => 'Quarantine',
+            'quantity' => $quantity,
+            'unit' => $request->input('unit', $item->unit),
+            'storage_location' => $location,
+            'expiry_date' => $request->input('expiry_date', Carbon::now()->addYear()->format('Y-m-d')),
+            'supplier_name' => $supplier,
+            'source_document' => $sourceDoc,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        // Insert into immutable ledger
+        DB::table('inventory_ledger')->insert([
+            'lot_id' => $lotId,
+            'transaction_type' => 'goods_receipt',
+            'quantity_change' => $quantity,
+            'running_balance' => $quantity,
+            'source_document' => $sourceDoc,
+            'user_name' => 'Giulia Romano · Warehouse',
+            'notes' => "Received {$quantity} {$item->unit} from {$supplier} into {$location}. Status set to Quarantine (GMP).",
+            'created_at' => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Goods receipt registered! Lot {$lotNumber} placed into Quarantine.",
+            'lot_id' => $lotId,
+            'lot_number' => $lotNumber,
+        ]);
+    }
+
+    /**
+     * Update Lot Storage Location (Internal Transfer)
+     */
+    public function updateLotLocation(Request $request, $id)
+    {
+        $lot = DB::table('lots')->where('id', $id)->first();
+        if (!$lot) {
+            return response()->json(['error' => 'Lot not found'], 404);
+        }
+
+        $oldLoc = $lot->storage_location;
+        $newLoc = $request->input('storage_location');
+        if (empty($newLoc)) {
+            return response()->json(['error' => 'New location is required'], 422);
+        }
+
+        DB::table('lots')->where('id', $id)->update([
+            'storage_location' => $newLoc,
+            'updated_at' => now(),
+        ]);
+
+        DB::table('inventory_ledger')->insert([
+            'lot_id' => $lot->id,
+            'transaction_type' => 'location_transfer',
+            'quantity_change' => 0,
+            'running_balance' => $lot->quantity,
+            'source_document' => 'TRF-' . date('ymd') . '-' . $lot->id,
+            'user_name' => 'Giulia Romano · Warehouse',
+            'notes' => "Internal transfer from [{$oldLoc}] to [{$newLoc}]",
+            'created_at' => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Lot {$lot->lot_number} transferred to {$newLoc}",
+            'newLocation' => $newLoc,
+        ]);
+    }
+
+    /**
      * Inventory Lots with FEFO calculation
      */
     public function getLots(Request $request)

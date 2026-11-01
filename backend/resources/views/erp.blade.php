@@ -277,6 +277,24 @@
     .release-button { margin:0 14px;width:calc(100% - 28px);background:var(--green); }
     .modal-overlay { position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:80;display:grid;place-items:center;backdrop-filter:blur(3px);padding:18px; }
     .modal { width:430px;max-width:100%;background:white;border-radius:11px;padding:23px;box-shadow:0 20px 50px rgba(15,23,42,.25); }
+    .modal-wide { width:580px; }
+    .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:10px; }
+    .form-full { grid-column:1/-1; }
+    .gmp-notice { display:flex; gap:9px; background:#fffbeb; border:1px solid #fde68a; border-radius:7px; padding:10px; color:#92400e; font-size:9px; line-height:1.4; margin-top:12px; }
+    .gmp-notice strong { color:#78350f; font-size:10px; display:block; margin-bottom:2px; }
+    .zone-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:14px; }
+    .zone-card { background:white; border:1px solid var(--border); border-radius:8px; padding:12px 14px; }
+    .zone-top { display:flex; justify-content:space-between; align-items:center; font-size:9px; color:var(--slate-500); }
+    .zone-card strong { font-size:13px; display:block; margin:4px 0 2px; color:var(--navy-900); }
+    .zone-bar { height:6px; background:var(--slate-100); border-radius:4px; overflow:hidden; margin:8px 0 4px; }
+    .zone-fill { height:100%; border-radius:4px; }
+    .filter-tabs { display:flex; gap:6px; flex-wrap:wrap; padding:10px 14px; background:var(--slate-50); border-bottom:1px solid var(--border); }
+    .filter-btn { height:27px; padding:0 10px; border:1px solid var(--slate-200); background:white; border-radius:6px; font-size:9px; font-weight:600; color:var(--slate-600); cursor:pointer; }
+    .filter-btn.active { background:var(--navy-900); color:white; border-color:var(--navy-900); }
+    .barcode-label { background:white; border:2px dashed #94a3b8; border-radius:8px; padding:18px; text-align:center; margin:14px 0; font-family:monospace; }
+    .barcode-lines { height:46px; background:repeating-linear-gradient(90deg,#000 0,#000 2px,#fff 2px,#fff 4px,#000 4px,#000 7px,#fff 7px,#fff 8px,#000 8px,#000 11px,#fff 11px,#fff 13px,#000 13px,#000 14px,#fff 14px,#fff 17px); margin:10px auto; width:80%; max-width:280px; }
+    .barcode-footer { display:flex; justify-content:space-between; font-size:8px; border-top:1px solid #e2e8f0; padding-top:8px; margin-top:10px; color:#64748b; }
+    .row-actions { display:flex; gap:4px; justify-content:flex-end; }
 
     .trace-toolbar { background:white;border:1px solid var(--border);border-radius:9px;min-height:59px;display:flex;align-items:center;gap:10px;padding:0 13px;margin-bottom:10px; }
     .trace-map { height:390px;position:relative;background:linear-gradient(90deg,transparent calc(16.66% - 1px),var(--slate-100) 16.66%,transparent calc(16.66% + 1px),transparent calc(33.33% - 1px),var(--slate-100) 33.33%,transparent calc(33.33% + 1px),transparent calc(50% - 1px),var(--slate-100) 50%,transparent calc(50% + 1px),transparent calc(66.66% - 1px),var(--slate-100) 66.66%,transparent calc(66.66% + 1px),transparent calc(83.33% - 1px),var(--slate-100) 83.33%,transparent calc(83.33% + 1px)); }
@@ -423,16 +441,55 @@
       );
     }
 
-    function Inventory() {
+    function Inventory({ notify }) {
       const [lots, setLots] = useState([]);
       const [summary, setSummary] = useState({});
+      const [stats, setStats] = useState(null);
+      const [items, setItems] = useState([]);
       const [selected, setSelected] = useState(null);
       const [ledger, setLedger] = useState([]);
+      const [filter, setFilter] = useState('All');
+      const [search, setSearch] = useState('');
 
-      useEffect(() => {
+      // Modals
+      const [receiptModal, setReceiptModal] = useState(false);
+      const [barcodeModal, setBarcodeModal] = useState(null);
+      const [transferModal, setTransferModal] = useState(null);
+      const [newLocation, setNewLocation] = useState('');
+
+      // Receipt Form
+      const [receiptForm, setReceiptForm] = useState({
+        item_id: '',
+        lot_number: '',
+        quantity: '',
+        unit: 'kg',
+        supplier_name: '',
+        source_document: '',
+        storage_location: 'WH-Q · Quarantine Bay · Q01',
+        expiry_date: '',
+      });
+
+      const loadData = () => {
         fetch('/api/v1/lots')
           .then(res => res.json())
           .then(data => { setLots(data.lots); setSummary(data.summary); });
+
+        fetch('/api/v1/warehouse/stats')
+          .then(res => res.json())
+          .then(data => setStats(data));
+
+        fetch('/api/v1/items')
+          .then(res => res.json())
+          .then(data => {
+            setItems(data);
+            if (data.length > 0 && !receiptForm.item_id) {
+              setReceiptForm(prev => ({ ...prev, item_id: data[0].id, unit: data[0].unit }));
+            }
+          });
+      };
+
+      useEffect(() => {
+        loadData();
       }, []);
 
       const openLot = (lot) => {
@@ -442,81 +499,546 @@
           .then(data => setLedger(data.ledger || []));
       };
 
+      const handleItemChange = (itemId) => {
+        const item = items.find(i => String(i.id) === String(itemId));
+        setReceiptForm({
+          ...receiptForm,
+          item_id: itemId,
+          unit: item ? item.unit : 'kg',
+        });
+      };
+
+      const submitReceipt = (e) => {
+        e.preventDefault();
+        if (!receiptForm.item_id || !receiptForm.quantity || !receiptForm.supplier_name) {
+          notify('Please fill all required receipt fields.');
+          return;
+        }
+
+        fetch('/api/v1/lots/receipt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(receiptForm),
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            setReceiptModal(false);
+            notify(data.message);
+            loadData();
+            // Automatically open barcode label for immediate printing on factory floor
+            const selectedItem = items.find(i => String(i.id) === String(receiptForm.item_id));
+            setBarcodeModal({
+              lot: data.lot_number,
+              name: selectedItem ? selectedItem.name : 'Raw Material',
+              code: selectedItem ? selectedItem.code : 'RM',
+              status: 'Quarantine',
+              qty: receiptForm.quantity,
+              unit: receiptForm.unit,
+              location: receiptForm.storage_location,
+              expiry: receiptForm.expiry_date || '—',
+              supplier: receiptForm.supplier_name,
+            });
+          }
+        });
+      };
+
+      const submitTransfer = () => {
+        if (!transferModal || !newLocation) return;
+        fetch(`/api/v1/lots/${transferModal.id}/location`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ storage_location: newLocation }),
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            notify(data.message);
+            setTransferModal(null);
+            loadData();
+            if (selected && selected.id === transferModal.id) {
+              setSelected({ ...selected, location: newLocation });
+              openLot({ ...selected, location: newLocation });
+            }
+          }
+        });
+      };
+
+      // Filtered lots
+      const filteredLots = lots.filter(lot => {
+        const matchesSearch = search === '' || 
+          lot.lot.toLowerCase().includes(search.toLowerCase()) ||
+          lot.name.toLowerCase().includes(search.toLowerCase()) ||
+          lot.code.toLowerCase().includes(search.toLowerCase()) ||
+          lot.location.toLowerCase().includes(search.toLowerCase());
+
+        if (!matchesSearch) return false;
+
+        if (filter === 'Quarantine') return lot.status === 'Quarantine';
+        if (filter === 'Approved') return lot.status === 'Approved';
+        if (filter === 'Rejected') return lot.status === 'Rejected';
+        if (filter === 'FEFO') return lot.fefo !== '';
+        if (filter === 'RM') return lot.code.startsWith('RM');
+        if (filter === 'PK') return lot.code.startsWith('PK');
+        return true;
+      });
+
       return (
         <div>
           <div className="page-header">
             <div>
-              <div className="eyebrow">WAREHOUSE MANAGEMENT</div>
+              <div className="eyebrow">WAREHOUSE MANAGEMENT & LOT TRACKING · GMP ISO 22716</div>
               <h1>Inventory & Lot Ledger</h1>
-              <p>Real-time stock ledger backed by MySQL</p>
+              <p>Warehouse Operator: <strong>Giulia Romano</strong> · Quarantine receipt, FEFO monitoring & physical bin transfers</p>
+            </div>
+            <div className="header-actions">
+              <Button variant="secondary" icon="file" onClick={() => window.print()}>Export Inventory</Button>
+              <Button icon="plus" onClick={() => setReceiptModal(true)}>+ New Goods Receipt</Button>
             </div>
           </div>
 
-          <div className="summary-strip">
-            <div><span>Total SKUs</span><strong>{summary.totalSkus || '1,284'}</strong></div>
-            <div><span>Inventory value</span><strong>{summary.inventoryValue || '€2.84M'}</strong></div>
-            <div><span>Quarantined</span><strong className="warning-text">{summary.quarantined || '1 lot'}</strong></div>
-            <div className="sync"><span className="live-dot"/>Live MySQL Sync</div>
-          </div>
+          {/* 1. Warehouse KPIs & Storage Analytics */}
+          {stats && (
+            <div className="metrics-grid">
+              <div className="metric-card">
+                <div className="metric-icon amber"><Icon name="clock"/></div>
+                <div className="metric-top"><span>Lots in Quarantine</span></div>
+                <strong className="metric-value">{stats.quarantineLots}</strong>
+                <div className="metric-bottom">
+                  <span>Awaiting QC sampling</span>
+                  <b className="warning-text">GMP Isolated</b>
+                </div>
+              </div>
 
+              <div className="metric-card">
+                <div className="metric-icon green"><Icon name="shield"/></div>
+                <div className="metric-top"><span>Approved & Released</span></div>
+                <strong className="metric-value">{stats.approvedLots}</strong>
+                <div className="metric-bottom">
+                  <span>Ready for dispensing</span>
+                  <b className="positive">Active Stock</b>
+                </div>
+              </div>
+
+              <div className="metric-card">
+                <div className="metric-icon rose"><Icon name="alert"/></div>
+                <div className="metric-top"><span>FEFO Priority (&lt;30d)</span></div>
+                <strong className="metric-value">{stats.expiring30}</strong>
+                <div className="metric-bottom">
+                  <span>First Expired First Out</span>
+                  <b className="danger-text">Urgent Dispense</b>
+                </div>
+              </div>
+
+              <div className="metric-card">
+                <div className="metric-icon blue"><Icon name="boxes"/></div>
+                <div className="metric-top"><span>Total Controlled Lots</span></div>
+                <strong className="metric-value">{stats.totalLots}</strong>
+                <div className="metric-bottom">
+                  <span>MySQL Ledger entries</span>
+                  <b>Live Sync</b>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 2. Warehouse Storage Zones Visual Gauges */}
+          {stats && (
+            <div className="zone-grid">
+              {stats.zones.map(z => (
+                <div className="zone-card" key={z.code}>
+                  <div className="zone-top">
+                    <span>{z.code} · {z.name}</span>
+                    <b style={{ color: z.status === 'Priority QC' ? '#b45309' : z.status === 'Locked GMP' ? '#be123c' : '#047857' }}>
+                      {z.status}
+                    </b>
+                  </div>
+                  <strong>{z.count} / {z.capacity} Lots ({z.occupancy}%)</strong>
+                  <div className="zone-bar">
+                    <div 
+                      className="zone-fill" 
+                      style={{ 
+                        width: `${z.occupancy}%`, 
+                        background: z.code === 'WH-Q' ? '#f59e0b' : z.code === 'WH-R' ? '#ef4444' : '#10b981' 
+                      }}
+                    />
+                  </div>
+                  <small style={{ fontSize: '8px', color: '#64748b' }}>Capacity Status: {z.occupancy &gt; 80 ? 'High load' : 'Normal space'}</small>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 3. Filter Bar & Search */}
           <div className="section-card table-card">
+            <div className="filter-tabs">
+              <button className={`filter-btn ${filter === 'All' ? 'active' : ''}`} onClick={() => setFilter('All')}>All Lots ({lots.length})</button>
+              <button className={`filter-btn ${filter === 'Quarantine' ? 'active' : ''}`} onClick={() => setFilter('Quarantine')}>🟧 Quarantine Only ({lots.filter(l => l.status === 'Quarantine').length})</button>
+              <button className={`filter-btn ${filter === 'Approved' ? 'active' : ''}`} onClick={() => setFilter('Approved')}>🟩 Approved ({lots.filter(l => l.status === 'Approved').length})</button>
+              <button className={`filter-btn ${filter === 'FEFO' ? 'active' : ''}`} onClick={() => setFilter('FEFO')}>⏳ FEFO Expiring Soon ({lots.filter(l => l.fefo !== '').length})</button>
+              <button className={`filter-btn ${filter === 'RM' ? 'active' : ''}`} onClick={() => setFilter('RM')}>🧪 Raw Materials</button>
+              <button className={`filter-btn ${filter === 'PK' ? 'active' : ''}`} onClick={() => setFilter('PK')}>📦 Packaging</button>
+            </div>
+
+            <div className="table-toolbar">
+              <div className="search table-search">
+                <Icon name="search" size={16}/>
+                <input 
+                  placeholder="Search by lot number, item name, location, supplier..." 
+                  value={search} 
+                  onChange={e => setSearch(e.target.value)}
+                />
+              </div>
+              <div style={{ fontSize: '9px', color: '#64748b' }}>
+                Showing <strong>{filteredLots.length}</strong> of {lots.length} records
+              </div>
+            </div>
+
+            {/* 4. Interactive Data Table */}
             <div className="data-table-wrap">
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Item code</th><th>Product / Material</th><th>Lot number</th><th>Expiry date</th><th>Storage location</th><th>Status</th><th className="number">Available qty</th><th>Unit</th>
+                    <th>Item code</th>
+                    <th>Product / Material</th>
+                    <th>Lot number</th>
+                    <th>Expiry date</th>
+                    <th>Storage location</th>
+                    <th>Status</th>
+                    <th className="number">Available qty</th>
+                    <th>Unit</th>
+                    <th style={{ textAlign: 'right' }}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {lots.map(lot => (
+                  {filteredLots.map(lot => (
                     <tr key={lot.lot} onClick={() => openLot(lot)}>
                       <td><code>{lot.code}</code></td>
                       <td><strong>{lot.name}</strong></td>
                       <td><button className="lot-link">{lot.lot}</button></td>
-                      <td>{lot.expiry} {lot.fefo && <small style={{color: '#be123c'}}>({lot.fefo})</small>}</td>
+                      <td>
+                        <div className={lot.fefo ? 'expiry-date' : ''}>
+                          {lot.expiry}
+                          {lot.fefo && <small><Icon name="alert" size={12}/>{lot.fefo} left (FEFO)</small>}
+                        </div>
+                      </td>
                       <td><span className="location">{lot.location}</span></td>
-                      <td><Status type={lot.status === 'Approved' ? 'approved' : lot.status === 'Quarantine' ? 'warning' : 'danger'}>{lot.status}</Status></td>
+                      <td>
+                        <Status type={lot.status === 'Approved' ? 'approved' : lot.status === 'Quarantine' ? 'warning' : 'danger'}>
+                          {lot.status}
+                        </Status>
+                      </td>
                       <td className="number"><strong>{lot.qty}</strong></td>
                       <td>{lot.unit}</td>
+                      <td onClick={e => e.stopPropagation()}>
+                        <div className="row-actions">
+                          <button 
+                            className="btn btn-secondary" 
+                            style={{ height: '26px', padding: '0 8px', fontSize: '9px' }}
+                            title="Print Barcode Label"
+                            onClick={() => setBarcodeModal(lot)}
+                          >
+                            <Icon name="scan" size={13}/> Print Label
+                          </button>
+                          <button 
+                            className="btn btn-secondary" 
+                            style={{ height: '26px', padding: '0 8px', fontSize: '9px' }}
+                            title="Transfer Storage Location"
+                            onClick={() => { setTransferModal(lot); setNewLocation(lot.location); }}
+                          >
+                            Move
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
+                  {filteredLots.length === 0 && (
+                    <tr>
+                      <td colSpan={9} style={{ textAlign: 'center', padding: '30px', color: '#94a3b8' }}>
+                        No lots found matching current search/filter.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
           </div>
 
+          {/* 5. Side Drawer: Lot Details & Immutable Ledger */}
           {selected && (
             <>
               <div className="drawer-overlay" onClick={() => setSelected(null)}/>
               <aside className="drawer">
                 <div className="drawer-head">
-                  <div><span>LOT DETAILS</span><h2>{selected.lot}</h2><p>{selected.name}</p></div>
+                  <div>
+                    <span>LOT DETAILS & TRACEABILITY</span>
+                    <h2>{selected.lot}</h2>
+                    <p>{selected.name}</p>
+                  </div>
                   <button className="icon-button" onClick={() => setSelected(null)}><Icon name="close"/></button>
                 </div>
+                
+                <div className="drawer-status">
+                  <Status type={selected.status === 'Approved' ? 'approved' : selected.status === 'Quarantine' ? 'warning' : 'danger'}>
+                    {selected.status}
+                  </Status>
+                  <span>Operator: Giulia Romano</span>
+                </div>
+
                 <div className="drawer-section">
-                  <h3>Lot information</h3>
+                  <h3>Physical Lot Information</h3>
                   <dl>
                     <div><dt>Item code</dt><dd>{selected.code}</dd></div>
-                    <div><dt>Available quantity</dt><dd>{selected.qty} {selected.unit}</dd></div>
-                    <div><dt>Location</dt><dd>{selected.location}</dd></div>
-                    <div><dt>Expiry</dt><dd>{selected.expiry}</dd></div>
-                    <div><dt>Supplier</dt><dd>{selected.supplier}</dd></div>
-                    <div><dt>Source doc</dt><dd>{selected.sourceDocument}</dd></div>
+                    <div><dt>Stock quantity</dt><dd>{selected.qty} {selected.unit}</dd></div>
+                    <div><dt>Current location</dt><dd>{selected.location}</dd></div>
+                    <div><dt>Expiry date</dt><dd>{selected.expiry} {selected.fefo && `(${selected.fefo})`}</dd></div>
+                    <div><dt>Supplier</dt><dd>{selected.supplier || 'Certified Raw Vendor'}</dd></div>
+                    <div><dt>Source PO / GRN</dt><dd className="link">{selected.sourceDocument}</dd></div>
                   </dl>
+
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+                    <Button variant="secondary" icon="scan" onClick={() => setBarcodeModal(selected)}>
+                      Print Barcode Label
+                    </Button>
+                    <Button variant="secondary" onClick={() => { setTransferModal(selected); setNewLocation(selected.location); }}>
+                      Transfer Location
+                    </Button>
+                  </div>
                 </div>
+
                 <div className="drawer-section">
-                  <h3>Immutable movement ledger (GMP)</h3>
+                  <h3>Immutable Movement Ledger (GMP Audit Trail)</h3>
                   <div className="ledger">
                     {ledger.map((e, idx) => (
                       <div className="ledger-entry" key={idx}>
-                        <span className={idx === 0 ? 'active' : ''}><Icon name="check" size={13}/></span>
-                        <div><small>{e.date}</small><strong>{e.action}</strong><p>{e.detail} · {e.user}</p></div>
+                        <span className={idx === 0 ? 'active' : ''}>
+                          <Icon name={idx === 0 ? 'check' : 'file'} size={13}/>
+                        </span>
+                        <div>
+                          <small>{e.date}</small>
+                          <strong>{e.action}</strong>
+                          <p>{e.detail} · {e.user}</p>
+                        </div>
                       </div>
                     ))}
                   </div>
                 </div>
               </aside>
             </>
+          )}
+
+          {/* 6. Modal: + New Goods Receipt (استلام شحنة جديدة) */}
+          {receiptModal && (
+            <div className="modal-overlay">
+              <div className="modal modal-wide">
+                <div className="modal-icon"><Icon name="plus"/></div>
+                <h2>Register New Goods Receipt</h2>
+                <p>Log incoming raw materials or packaging from certified suppliers into warehouse quarantine.</p>
+
+                <form onSubmit={submitReceipt}>
+                  <div className="form-grid">
+                    <div className="form-full">
+                      <label>Select Item / Material (Master Data)*
+                        <select 
+                          value={receiptForm.item_id} 
+                          onChange={e => handleItemChange(e.target.value)}
+                          required
+                        >
+                          {items.map(item => (
+                            <option key={item.id} value={item.id}>
+                              [{item.code}] {item.name} ({item.type === 'raw_material' ? 'Raw Material' : 'Packaging'})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    <div>
+                      <label>Lot Number (Auto-assigned if empty)
+                        <input 
+                          placeholder="e.g. GLY-8821-IT" 
+                          value={receiptForm.lot_number} 
+                          onChange={e => setReceiptForm({ ...receiptForm, lot_number: e.target.value })}
+                        />
+                      </label>
+                    </div>
+
+                    <div>
+                      <label>Received Quantity*
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <input 
+                            type="number" 
+                            step="0.01" 
+                            placeholder="e.g. 500.00" 
+                            value={receiptForm.quantity} 
+                            onChange={e => setReceiptForm({ ...receiptForm, quantity: e.target.value })}
+                            required
+                          />
+                          <input 
+                            style={{ width: '70px', background: '#f1f5f9' }} 
+                            value={receiptForm.unit} 
+                            readOnly
+                          />
+                        </div>
+                      </label>
+                    </div>
+
+                    <div>
+                      <label>Supplier Name*
+                        <input 
+                          placeholder="e.g. Cosmetica Materie S.p.A." 
+                          value={receiptForm.supplier_name} 
+                          onChange={e => setReceiptForm({ ...receiptForm, supplier_name: e.target.value })}
+                          required
+                        />
+                      </label>
+                    </div>
+
+                    <div>
+                      <label>Source Document (PO / Delivery Note)*
+                        <input 
+                          placeholder="e.g. PO-2025-0189 / DN-8812" 
+                          value={receiptForm.source_document} 
+                          onChange={e => setReceiptForm({ ...receiptForm, source_document: e.target.value })}
+                        />
+                      </label>
+                    </div>
+
+                    <div>
+                      <label>Expiration Date (FEFO Tracking)
+                        <input 
+                          type="date" 
+                          value={receiptForm.expiry_date} 
+                          onChange={e => setReceiptForm({ ...receiptForm, expiry_date: e.target.value })}
+                        />
+                      </label>
+                    </div>
+
+                    <div>
+                      <label>Initial Quarantine Location*
+                        <select 
+                          value={receiptForm.storage_location} 
+                          onChange={e => setReceiptForm({ ...receiptForm, storage_location: e.target.value })}
+                        >
+                          <option value="WH-Q · Quarantine Bay · Q01">WH-Q · Quarantine Bay · Q01</option>
+                          <option value="WH-Q · Quarantine Bay · Q02">WH-Q · Quarantine Bay · Q02</option>
+                          <option value="WH-Q · Receiving Dock · Bay 01">WH-Q · Receiving Dock · Bay 01</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="form-full gmp-notice">
+                      <Icon name="shield" size={18}/>
+                      <div>
+                        <strong>GMP Mandatory Quarantine (ISO 22716)</strong>
+                        All incoming goods are automatically flagged as <b>QUARANTINE</b>. Only QC Laboratory testing and QA authorized release can approve stock for production.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="modal-actions">
+                    <Button variant="secondary" onClick={() => setReceiptModal(false)}>Cancel</Button>
+                    <Button icon="check" type="submit">Confirm & Receive Goods</Button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* 7. Modal: Print GMP Barcode Label */}
+          {barcodeModal && (
+            <div className="modal-overlay">
+              <div className="modal" style={{ width: '460px' }}>
+                <div className="modal-icon"><Icon name="scan"/></div>
+                <h2>Physical Barcode & QR Label</h2>
+                <p>Print and attach this label directly to incoming drums, bins, or boxes.</p>
+
+                <div className="barcode-label" id="printable-label">
+                  <div style={{ fontSize: '9px', fontWeight: 'bold', letterSpacing: '1px', color: '#475569' }}>
+                    BEAUTY ITALY FACTORY · MILANO PLANT
+                  </div>
+                  <h3 style={{ fontSize: '18px', margin: '4px 0 2px' }}>{barcodeModal.lot}</h3>
+                  <div style={{ fontSize: '11px', color: '#1e293b', fontWeight: '600' }}>
+                    {barcodeModal.name} ({barcodeModal.code})
+                  </div>
+
+                  <div className="barcode-lines"/>
+                  
+                  <div style={{ margin: '8px 0' }}>
+                    <span 
+                      style={{ 
+                        display: 'inline-block',
+                        padding: '4px 10px', 
+                        borderRadius: '4px', 
+                        fontSize: '10px', 
+                        fontWeight: 'bold',
+                        color: barcodeModal.status === 'Approved' ? '#047857' : '#92400e',
+                        background: barcodeModal.status === 'Approved' ? '#d1fae5' : '#fef3c7',
+                        border: `1px solid ${barcodeModal.status === 'Approved' ? '#a7f3d0' : '#fde68a'}`
+                      }}
+                    >
+                      {barcodeModal.status === 'Approved' ? '✓ APPROVED FOR USE' : '⚠ QUARANTINE — DO NOT USE'}
+                    </span>
+                  </div>
+
+                  <div className="barcode-footer">
+                    <div><b>Qty:</b> {barcodeModal.qty} {barcodeModal.unit}</div>
+                    <div><b>Loc:</b> {barcodeModal.location}</div>
+                    <div><b>Exp:</b> {barcodeModal.expiry}</div>
+                  </div>
+                  <div style={{ marginTop: '6px', fontSize: '7px', color: '#94a3b8' }}>
+                    Operator: Giulia Romano · Verified under GMP-SOP-014
+                  </div>
+                </div>
+
+                <div className="modal-actions">
+                  <Button variant="secondary" onClick={() => setBarcodeModal(null)}>Close</Button>
+                  <Button icon="scan" onClick={() => { notify('Sending label to Zebra Barcode Printer WS-01'); setBarcodeModal(null); }}>
+                    Print Physical Label
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 8. Modal: Transfer Storage Location */}
+          {transferModal && (
+            <div className="modal-overlay">
+              <div className="modal">
+                <div className="modal-icon"><Icon name="boxes"/></div>
+                <h2>Internal Location Transfer</h2>
+                <p>Move Lot <strong>{transferModal.lot}</strong> to a new rack, aisle, or quarantine zone.</p>
+
+                <label>Current Location
+                  <input value={transferModal.location} readOnly style={{ background: '#f8fafc' }}/>
+                </label>
+
+                <label style={{ marginTop: '10px' }}>Target Storage Location*
+                  <select value={newLocation} onChange={e => setNewLocation(e.target.value)}>
+                    <optgroup label="Main Warehouse WH-A (Raw Materials)">
+                      <option value="WH-A · A01 · S08">WH-A · Rack A01 · Shelf S08</option>
+                      <option value="WH-A · A02 · S03">WH-A · Rack A02 · Shelf S03</option>
+                      <option value="WH-A · A03 · S12">WH-A · Rack A03 · Shelf S12</option>
+                    </optgroup>
+                    <optgroup label="Quarantine Isolation WH-Q">
+                      <option value="WH-Q · Quarantine Bay · Q01">WH-Q · Quarantine Bay · Q01</option>
+                      <option value="WH-Q · Quarantine Bay · Q02">WH-Q · Quarantine Bay · Q02</option>
+                    </optgroup>
+                    <optgroup label="Packaging WH-P">
+                      <option value="WH-P · P07 · S02">WH-P · Rack P07 · Shelf S02</option>
+                    </optgroup>
+                    <optgroup label="Rejected Isolation WH-R">
+                      <option value="WH-R · R02 · S10">WH-R · Isolation Cage · R02</option>
+                    </optgroup>
+                  </select>
+                </label>
+
+                <div className="modal-actions">
+                  <Button variant="secondary" onClick={() => setTransferModal(null)}>Cancel</Button>
+                  <Button onClick={submitTransfer}>Update Location & Log Ledger</Button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
       );
@@ -784,7 +1306,7 @@
 
       const content = {
         dashboard: <Dashboard navigate={setPage} notify={notify}/>,
-        inventory: <Inventory/>,
+        inventory: <Inventory notify={notify}/>,
         formulation: <Formulation/>,
         dispensing: <Dispensing notify={notify}/>,
         quality: <Quality notify={notify}/>,
