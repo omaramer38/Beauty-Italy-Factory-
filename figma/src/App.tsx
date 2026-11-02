@@ -198,19 +198,210 @@ function Formulation() {
 function Dispensing({ notify }: { notify:(s:string)=>void }) {
   const [step, setStep] = useState(2)
   const [signed, setSigned] = useState(false)
+  const [isManualMode, setIsManualMode] = useState(false)
+  const [manualWeight, setManualWeight] = useState('50.042')
+  const [manualReason, setManualReason] = useState('Physical scale reading verified manually (discrepancy override)')
+  const [liveWeight, setLiveWeight] = useState(50.042)
+  const [tareWeight, setTareWeight] = useState(0.0)
+
+  const activeIng = ingredients[step - 1]
+  const targetWeight = parseFloat(activeIng[5]) || 50.0
+  const tolPercent = 0.50
+  const minAllowed = targetWeight * (1 - tolPercent / 100)
+  const maxAllowed = targetWeight * (1 + tolPercent / 100)
+
+  const effectiveWeight = isManualMode 
+    ? (parseFloat(manualWeight) || 0) 
+    : Math.max(0, parseFloat((liveWeight - tareWeight).toFixed(3)))
+
+  const delta = effectiveWeight - targetWeight
+  const deltaPercent = targetWeight > 0 ? (delta / targetWeight) * 100 : 0
+  const isInTolerance = effectiveWeight >= minAllowed && effectiveWeight <= maxAllowed && effectiveWeight > 0
+
+  const handleSelectStep = (s: number) => {
+    setStep(s)
+    const t = parseFloat(ingredients[s - 1][5]) || 50.0
+    setLiveWeight(t)
+    setManualWeight(t.toFixed(3))
+    setSigned(false)
+  }
+
+  const handleTare = () => {
+    setTareWeight(liveWeight)
+    notify(`Scale Tared: ${liveWeight.toFixed(3)} kg container weight deducted`)
+  }
+
   return <div className="shopfloor">
-    <PageHeader eyebrow="ELECTRONIC BATCH RECORD · WEIGHING STATION WS-02" title="Batch Dispensing" subtitle="B-25-0415 · Anti-Aging Renewal Cream · 1,000 kg">
+    <PageHeader eyebrow="ELECTRONIC BATCH RECORD · WEIGHING STATION WS-02" title="Batch Dispensing (Tablet Mode)" subtitle="B-25-0415 · Anti-Aging Renewal Cream · 1,000 kg">
       <Status type="approved">Scale connected</Status><Button variant="secondary">Pause session</Button>
     </PageHeader>
-    <div className="dispense-progress"><div><span>Progress</span><strong>{step} of 9 materials</strong></div><div className="progress-track"><span style={{width:`${(step/9)*100}%`}}/></div><b>{Math.round((step/9)*100)}%</b></div>
-    <div className="dispense-layout"><aside className="step-list"><div className="step-list-head"><h2>Dispensing sequence</h2><span>Phase A</span></div>{ingredients.map((x,i)=><button key={x[1]} className={`${i===step-1?'active':''} ${i<step-1?'done':''}`} onClick={()=>setStep(i+1)}><span>{i<step-1?<Icon name="check" size={14}/>:i+1}</span><div><strong>{x[1]}</strong><small>Target {x[5]} kg</small></div>{i===step-1&&<i/>}</button>)}</aside>
-      <div className="weigh-workspace"><div className="material-head"><div className="material-phase">A</div><div><span>MATERIAL {step} OF 9</span><h2>{ingredients[step-1][1]}</h2><p>{ingredients[step-1][2]} · RM-{step === 2 ? '00142' : '00'+step}</p></div><Status type="approved">Correct material</Status></div>
-        <div className="scan-panel"><label>Scan raw material lot barcode</label><div><Icon name="scan" size={25}/><input value={step===2?'GLY-8821-IT':''} placeholder="Scan or enter lot barcode…" readOnly/><span><Icon name="check" size={16}/> Verified</span></div><p>FEFO lot selected · Expires 02 May 2025 · Location WH-A / A03 / S12</p></div>
-        <div className="weight-grid"><div><span>Target weight</span><strong>{ingredients[step-1][5]}<small> kg</small></strong><p>Tolerance ±0.5% · {step===2?'49.750 – 50.250':'—'}</p></div><div className="actual-weight"><span>Live scale weight <i>STABLE</i></span><strong>{step===2?'50.042':'0.000'}<small> kg</small></strong><p><Icon name="check" size={16}/> Within tolerance (+0.084%)</p></div></div>
-        <div className="operator-note"><Icon name="shield"/><div><strong>GMP verification complete</strong><p>Material identity, lot status, and weight tolerance have been verified automatically.</p></div></div>
-        <div className="dispense-actions"><Button variant="secondary">Report deviation</Button><Button icon="check" className="confirm-dispense" onClick={()=>{setSigned(true);notify('Electronic signature recorded')}}>Confirm & Sign Dispense</Button></div>
+    <div className="dispense-progress">
+      <div><span>Progress</span><strong>{step} of 9 materials ({Math.round(((step - 1) / 9) * 100)}%)</strong></div>
+      <div className="progress-track"><span style={{width:`${((step - 1) / 9) * 100}%`}}/></div>
+      <b>{Math.round(((step - 1) / 9) * 100)}%</b>
+    </div>
+    
+    <div className="dispense-layout">
+      <aside className="step-list">
+        <div className="step-list-head"><h2>Dispensing sequence</h2><span>Phase {activeIng[0]}</span></div>
+        {ingredients.map((x,i)=><button key={x[1]} className={`${i===step-1?'active':''} ${i<step-1?'done':''}`} onClick={()=>handleSelectStep(i+1)}>
+          <span>{i<step-1?<Icon name="check" size={14}/>:i+1}</span>
+          <div><strong>{x[1]}</strong><small>Target {x[5]} kg (Phase {x[0]})</small></div>
+          {i===step-1&&<i/>}
+        </button>)}
+      </aside>
+
+      <div className="weigh-workspace">
+        <div className="material-head">
+          <div className="material-phase">{activeIng[0]}</div>
+          <div>
+            <span>MATERIAL {step} OF 9</span>
+            <h2>{activeIng[1]}</h2>
+            <p>{activeIng[2]} · RM-{step === 2 ? '00142' : '00'+step}</p>
+          </div>
+          <Status type="approved">Correct material</Status>
+        </div>
+
+        <div className="scan-panel">
+          <label>Scan raw material lot barcode</label>
+          <div>
+            <Icon name="scan" size={25}/>
+            <input value={step===2?'GLY-8821-IT':'PW-250415'} placeholder="Scan or enter lot barcode…" readOnly/>
+            <span><Icon name="check" size={16}/> Verified</span>
+          </div>
+          <p>FEFO lot selected · Expires 02 May 2026 · Location WH-A / A03 / S12</p>
+        </div>
+
+        {/* Reading Mode Selector & Tare */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#f8fafc', padding: '10px 14px', borderRadius: '8px', border: '1px solid #e2e8f0', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '11px', fontWeight: 700, color: '#475569' }}>Mode:</span>
+            <button 
+              type="button" 
+              style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 600, borderRadius: '4px', border: '1px solid #cbd5e1', background: !isManualMode ? '#1e293b' : 'white', color: !isManualMode ? 'white' : '#64748b' }}
+              onClick={()=>setIsManualMode(false)}
+            >
+              Scale Stream (Auto)
+            </button>
+            <button 
+              type="button" 
+              style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 600, borderRadius: '4px', border: '1px solid #cbd5e1', background: isManualMode ? '#f59e0b' : 'white', color: isManualMode ? '#78350f' : '#64748b' }}
+              onClick={()=>{ setIsManualMode(true); setManualWeight(effectiveWeight.toFixed(3)); }}
+            >
+              ✏️ Manual Override (تعديل يدوي)
+            </button>
+          </div>
+          {!isManualMode && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px' }}>
+              <span>Tare: <strong>{tareWeight.toFixed(3)} kg</strong></span>
+              <button type="button" onClick={handleTare} style={{ padding: '3px 8px', fontSize: '10px', border: '1px solid #cbd5e1', borderRadius: '4px', background: 'white' }}>Tare Scale</button>
+              {tareWeight > 0 && <button type="button" onClick={()=>setTareWeight(0)} style={{ padding: '3px 6px', fontSize: '10px', color: '#be123c', border: '1px solid #fecdd3', borderRadius: '4px', background: '#fff1f2' }}>Reset</button>}
+            </div>
+          )}
+        </div>
+
+        {/* Manual Override Inputs */}
+        {isManualMode && (
+          <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '12px 14px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <Icon name="alert" size={16} />
+              <strong style={{ fontSize: '12px', color: '#92400e' }}>Manual Weight Override Active (إدخال وتعديل يدوي)</strong>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '10px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '10px', fontWeight: 700, color: '#78350f', marginBottom: '4px' }}>Actual Weight (kg) *</label>
+                <input 
+                  type="number" 
+                  step="0.001" 
+                  style={{ width: '100%', height: '36px', fontSize: '15px', fontWeight: 'bold', padding: '0 8px', border: '2px solid #f59e0b', borderRadius: '6px' }}
+                  value={manualWeight} 
+                  onChange={e=>setManualWeight(e.target.value)}
+                />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '10px', fontWeight: 700, color: '#78350f', marginBottom: '4px' }}>Justification *</label>
+                <input 
+                  style={{ width: '100%', height: '36px', fontSize: '11px', padding: '0 8px', border: '1px solid #d97706', borderRadius: '6px' }}
+                  value={manualReason} 
+                  onChange={e=>setManualReason(e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="weight-grid">
+          <div>
+            <span>Target weight</span>
+            <strong>{targetWeight.toFixed(3)}<small> kg</small></strong>
+            <p>Tolerance ±0.5% · ({minAllowed.toFixed(3)} – {maxAllowed.toFixed(3)} kg)</p>
+          </div>
+          <div className="actual-weight" style={{ background: isInTolerance ? '#ecfdf5' : '#fffbeb', borderColor: isInTolerance ? '#a7f3d0' : '#fde68a' }}>
+            <span>{isManualMode ? 'Manual Weight' : 'Live scale weight'} <i>STABLE</i></span>
+            <strong>{effectiveWeight.toFixed(3)}<small> kg</small></strong>
+            <p style={{ color: isInTolerance ? '#047857' : '#b45309' }}>
+              {isInTolerance ? <><Icon name="check" size={16}/> Within tolerance ({deltaPercent >= 0 ? '+' : ''}{deltaPercent.toFixed(3)}%)</> : `Outside tolerance (${deltaPercent.toFixed(2)}%)`}
+            </p>
+          </div>
+        </div>
+
+        <div className="operator-note">
+          <Icon name="shield"/>
+          <div>
+            <strong>GMP verification {isInTolerance ? 'passed' : 'pending'}</strong>
+            <p>{isManualMode ? 'Manual reading recorded with justification for audit log.' : 'Material identity, lot status, and live weight tolerance verified.'}</p>
+          </div>
+        </div>
+
+        <div className="dispense-actions">
+          <Button variant="secondary" onClick={()=>notify('Deviation logged')}>Report deviation</Button>
+          <Button 
+            icon="check" 
+            className="confirm-dispense" 
+            onClick={()=>{
+              setSigned(true)
+              notify(`Step ${step} signed (${effectiveWeight.toFixed(3)} kg - ${isManualMode ? 'Manual Override' : 'Scale'})`)
+              if (step < 9) handleSelectStep(step + 1)
+            }}
+          >
+            {signed ? 'Re-confirm & Update Weight' : (isManualMode ? 'Confirm Manual Weight' : 'Confirm & Sign Dispense')}
+          </Button>
+        </div>
       </div>
-      <aside className="station-side"><div className="station-card"><span>WEIGHING STATION</span><h3>WS-02</h3><div className="scale-visual"><Icon name="scale" size={30}/><strong>50.042 kg</strong><small>METTLER TOLEDO · Connected</small></div><dl><div><dt>Calibration</dt><dd className="positive">Valid</dd></div><div><dt>Due date</dt><dd>30 Apr 2025</dd></div><div><dt>Operator</dt><dd>G. Romano</dd></div></dl></div><div className="audit-note"><Icon name="lock" size={16}/><span>All actions are time-stamped and recorded in the immutable eBMR audit trail.</span></div>{signed&&<div className="signed-notice"><Icon name="check"/><div><strong>Step signed</strong><span>Giulia Romano · just now</span></div></div>}</aside>
+
+      <aside className="station-side">
+        <div className="station-card">
+          <span>WEIGHING STATION</span>
+          <h3>WS-02</h3>
+          <div className="scale-visual">
+            <Icon name="scale" size={30}/>
+            <strong>{effectiveWeight.toFixed(3)} kg</strong>
+            <small>METTLER TOLEDO · {isManualMode ? 'Manual Override' : 'Live Stream'}</small>
+          </div>
+          <dl>
+            <div><dt>Calibration</dt><dd className="positive">Valid</dd></div>
+            <div><dt>Due date</dt><dd>30 Apr 2026</dd></div>
+            <div><dt>Operator</dt><dd>G. Romano</dd></div>
+          </dl>
+        </div>
+
+        {/* Quick Simulator Bar */}
+        <div style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px' }}>
+          <strong style={{ fontSize: '11px', display: 'block', marginBottom: '8px' }}>🛠️ Test Simulator:</strong>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+            <button type="button" onClick={()=>{ setLiveWeight(targetWeight); setManualWeight(targetWeight.toFixed(3)); }} style={{ padding: '4px', fontSize: '10px', border: '1px solid #cbd5e1', borderRadius: '4px', background: '#f8fafc' }}>Exact Target</button>
+            <button type="button" onClick={()=>{ const v = parseFloat((targetWeight*0.95).toFixed(3)); setLiveWeight(v); setManualWeight(v.toFixed(3)); }} style={{ padding: '4px', fontSize: '10px', border: '1px solid #cbd5e1', borderRadius: '4px', background: '#f8fafc' }}>-5% Under</button>
+            <button type="button" onClick={()=>{ const v = parseFloat((targetWeight*1.03).toFixed(3)); setLiveWeight(v); setManualWeight(v.toFixed(3)); }} style={{ padding: '4px', fontSize: '10px', border: '1px solid #cbd5e1', borderRadius: '4px', background: '#f8fafc' }}>+3% Over</button>
+            <button type="button" onClick={()=>{ setLiveWeight(0); setManualWeight('0.000'); }} style={{ padding: '4px', fontSize: '10px', border: '1px solid #cbd5e1', borderRadius: '4px', background: '#f8fafc' }}>Zero</button>
+          </div>
+        </div>
+
+        <div className="audit-note">
+          <Icon name="lock" size={16}/>
+          <span>All actions are time-stamped and recorded in the immutable eBMR audit trail.</span>
+        </div>
+        {signed&&<div className="signed-notice"><Icon name="check"/><div><strong>Step signed</strong><span>Giulia Romano · just now</span></div></div>}
+      </aside>
     </div>
   </div>
 }
