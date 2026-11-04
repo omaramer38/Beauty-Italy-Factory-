@@ -72,6 +72,7 @@
     {{-- Business Logic Modules --}}
     @include('components.modules.dashboard')
     @include('components.modules.inventory')
+    @include('components.modules.procurement')
     @include('components.modules.formulation')
     @include('components.modules.dispensing')
     @include('components.modules.quality')

@@ -457,16 +457,18 @@ window.scanFileForCode = function(file, onSuccess, onError) {
 const nav = [
   { id: 'dashboard', label: 'Command Center', icon: 'grid' },
   { id: 'inventory', label: 'Inventory & Lots', icon: 'boxes' },
+  { id: 'procurement', label: 'Suppliers & Invoices', icon: 'file' },
   { id: 'formulation', label: 'Formulation Studio', icon: 'flask' },
   { id: 'dispensing', label: 'Dispensing & eBMR', icon: 'scale' },
   { id: 'quality', label: 'Quality & Release', icon: 'shield', count: 1 },
   { id: 'trace', label: 'Traceability', icon: 'trace' },
 ];
 
-const roles = ['Admin', 'Warehouse Operator', 'R&D Chemist', 'Shopfloor Operator', 'QC Lab Analyst', 'QA Manager'];
+const roles = ['Admin', 'Warehouse Operator', 'Procurement Specialist', 'R&D Chemist', 'Shopfloor Operator', 'QC Lab Analyst', 'QA Manager'];
 const roleProfiles = {
   Admin: { landing: 'dashboard', label: 'Full system oversight', detail: 'All controlled modules and administrative permissions are active on MySQL.', initials: 'MC' },
   'Warehouse Operator': { landing: 'inventory', label: 'Warehouse workspace', detail: 'Receive materials, manage locations, and review FEFO and quarantine alerts.', initials: 'GR' },
+  'Procurement Specialist': { landing: 'procurement', label: 'Procurement workspace', detail: 'Manage suppliers, what they supply, purchase orders, prices and invoices.', initials: 'PS' },
   'R&D Chemist': { landing: 'formulation', label: 'R&D controlled workspace', detail: 'Create formula revisions and route specifications through approval.', initials: 'SB' },
   'Shopfloor Operator': { landing: 'dispensing', label: 'Shopfloor tablet mode', detail: 'Large touch controls and the active dispensing sequence are prioritized.', initials: 'GR' },
   'QC Lab Analyst': { landing: 'quality', label: 'Laboratory testing workspace', detail: 'Record controlled results and submit completed samples to QA.', initials: 'LB' },

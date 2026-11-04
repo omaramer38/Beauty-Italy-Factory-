@@ -35,6 +35,9 @@ function App() {
       setPage('dispensing');
     } else if (item.target === 'quality') {
       setPage('quality');
+    } else if (item.target === 'procurement') {
+      setTargetEntityId(item.payload);
+      setPage('procurement');
     }
   };
 
@@ -45,7 +48,8 @@ function App() {
 
   const content = {
     dashboard: <Dashboard navigate={setPage} notify={notify} onOpenSearch={() => setOmniboxOpen(true)} onOpenScanner={() => setScannerOpen(true)}/>,
-    inventory: <Inventory notify={notify} initialLotNumber={page === 'inventory' ? targetEntityId : null}/>,
+    inventory: <Inventory notify={notify} navigate={setPage} initialLotNumber={page === 'inventory' ? targetEntityId : null}/>,
+    procurement: <Procurement notify={notify} navigate={setPage} initialTarget={page === 'procurement' ? targetEntityId : null} onReceiveToWarehouse={() => setPage('inventory')}/>,
     formulation: (
       <Formulation 
         activeCode={page === 'formulation' ? targetEntityId : 'FRM-SC-0042'} 
@@ -62,7 +66,7 @@ function App() {
     ),
     dispensing: <Dispensing notify={notify} initialBatchNumber={page === 'dispensing' ? targetEntityId : null} onOpenScanner={() => setScannerOpen(true)}/>,
     quality: <Quality notify={notify}/>,
-    trace: <Traceability notify={notify} onOpenScanner={() => setScannerOpen(true)}/>,
+    trace: <Traceability notify={notify} navigate={setPage} onOpenScanner={() => setScannerOpen(true)}/>,
   };
 
   return (

@@ -1,6 +1,6 @@
 @verbatim
 // Traceability Component (Forward & Backward Genealogy, Barcode Scanner, Recall Center, Dossier)
-function Traceability({ notify, onOpenScanner }) {
+function Traceability({ notify, onOpenScanner, navigate }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -559,11 +559,22 @@ function Traceability({ notify, onOpenScanner }) {
 
             </div>
 
-            <div className="modal-footer">
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <Button variant="secondary" onClick={() => setActiveNode(null)}>Close</Button>
-              <Button variant="primary" icon="search" onClick={() => { setSearchQuery(activeNode.code); fetchTrace(activeNode.code); setActiveNode(null); }}>
-                Focus Trace on this Node
-              </Button>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {activeNode.type === 'Supplier Purchase Order' && navigate && (
+                  <Button 
+                    variant="secondary" 
+                    icon="file" 
+                    onClick={() => { setActiveNode(null); navigate('procurement'); }}
+                  >
+                    Open in Procurement ↗
+                  </Button>
+                )}
+                <Button variant="primary" icon="search" onClick={() => { setSearchQuery(activeNode.code); fetchTrace(activeNode.code); setActiveNode(null); }}>
+                  Focus Trace on this Node
+                </Button>
+              </div>
             </div>
           </div>
         </div>

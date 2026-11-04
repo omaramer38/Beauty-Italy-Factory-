@@ -24,11 +24,52 @@ class PhaseOneApiController extends Controller
 
         $pendingQARelease = DB::table('qc_samples')->where('status', 'Pending QA release')->count();
 
+        // Procurement & Inventory Financial Valuation breakdown
+        $totalValuation = (float)(DB::table('lots')
+            ->join('items', 'lots.item_id', '=', 'items.id')
+            ->selectRaw('SUM(lots.quantity * items.cost_per_unit) as val')
+            ->value('val') ?? 0);
+
+        $rawValuation = (float)(DB::table('lots')
+            ->join('items', 'lots.item_id', '=', 'items.id')
+            ->where('items.type', 'raw_material')
+            ->selectRaw('SUM(lots.quantity * items.cost_per_unit) as val')
+            ->value('val') ?? 0);
+
+        $pkgValuation = (float)(DB::table('lots')
+            ->join('items', 'lots.item_id', '=', 'items.id')
+            ->where('items.type', 'packaging')
+            ->selectRaw('SUM(lots.quantity * items.cost_per_unit) as val')
+            ->value('val') ?? 0);
+
+        $fgValuation = (float)(DB::table('lots')
+            ->join('items', 'lots.item_id', '=', 'items.id')
+            ->where('items.type', 'finished_good')
+            ->selectRaw('SUM(lots.quantity * items.cost_per_unit) as val')
+            ->value('val') ?? 0);
+
+        $activeSuppliers = DB::table('suppliers')->where('status', 'Active')->count();
+        $openInvoices = DB::table('purchase_invoices')->whereIn('status', ['Approved', 'Draft'])->count();
+
+        // Production lines with rich MES status
         $lines = DB::table('production_batches')->get()->map(function ($b) {
             $tone = 'approved';
-            if ($b->status === 'QC Hold') $tone = 'warning';
-            if ($b->status === 'Changeover') $tone = 'info';
-            if ($b->status === 'Released' || $b->status === 'Completed') $tone = 'neutral';
+            $stage = 'Final Release & Packaging';
+            $operator = 'Marco Conti (Lead)';
+
+            if ($b->status === 'Running') {
+                $tone = 'info';
+                $stage = 'Phase 3: High-Shear Emulsification';
+                $operator = 'Elena Rossi (Chemist)';
+            } elseif ($b->status === 'QC Hold') {
+                $tone = 'warning';
+                $stage = 'Analytical Viscosity & Assay Verification';
+                $operator = 'Dr. Laura Bianchi (QC)';
+            } elseif ($b->status === 'Changeover') {
+                $tone = 'neutral';
+                $stage = 'CIP Sanitization & Tooling Change';
+                $operator = 'Roberto Bellini (Tech)';
+            }
 
             return [
                 'line' => $b->line_code,
@@ -38,26 +79,121 @@ class PhaseOneApiController extends Controller
                 'end' => $b->end_time,
                 'progress' => $b->progress,
                 'status' => $b->status,
+                'stage' => $stage,
+                'operator' => $operator,
                 'tone' => $tone,
             ];
         });
 
+        // Environmental cleanroom telemetry (ISO 22716 standard)
+        $cleanrooms = [
+            ['suite' => 'Cleanroom Suite A (Mixing)', 'grade' => 'ISO Class 7', 'temp' => '20.4°C', 'humidity' => '46% RH', 'pressure' => '+28 Pa', 'status' => 'In-Spec', 'tone' => 'green'],
+            ['suite' => 'Cleanroom Suite B (Filling)', 'grade' => 'ISO Class 7', 'temp' => '19.8°C', 'humidity' => '44% RH', 'pressure' => '+32 Pa', 'status' => 'In-Spec', 'tone' => 'green'],
+            ['suite' => 'Purified WFI Water Loop', 'grade' => 'Ph. Eur / USP', 'temp' => '82.5°C', 'humidity' => '0.84 µS/cm', 'pressure' => '< 50 ppb TOC', 'status' => 'Passed', 'tone' => 'green'],
+        ];
+
         $attention = [
-            ['title' => 'Quarantine QC pending', 'code' => 'RET-24018 (Retinol Liposomes)', 'due' => 'Awaiting assay', 'tone' => 'warning'],
-            ['title' => 'FEFO expiry alert', 'code' => 'GLY-8821-IT (Glycerin 99.5%)', 'due' => 'Expiring soon', 'tone' => 'danger'],
-            ['title' => 'Dispense verification', 'code' => 'Batch B-25-0415 (L01)', 'due' => 'Step 3 active', 'tone' => 'info'],
-            ['title' => 'QA disposition needed', 'code' => 'Batch B-25-0398 (L03)', 'due' => 'COA approved', 'tone' => 'approved'],
+            ['title' => 'Quarantine QC Sampling', 'code' => 'RET-24018 (Retinol Liposomes)', 'due' => 'Awaiting assay test', 'tone' => 'warning', 'priority' => 'P1 HIGH'],
+            ['title' => 'FEFO Expiry Consumption', 'code' => 'GLY-8821-IT (Glycerin 99.5%)', 'due' => 'Expiring within 60 days', 'tone' => 'danger', 'priority' => 'P2 URGENT'],
+            ['title' => 'Dispensing Scale WS-02', 'code' => 'Batch B-25-0415 (L01)', 'due' => 'Step 3 nitrogen active', 'tone' => 'info', 'priority' => 'P3 IN-MES'],
+            ['title' => 'QA Analytical Release', 'code' => 'Batch B-25-0398 (L03)', 'due' => 'COA ready for digital sign', 'tone' => 'approved', 'priority' => 'P3 READY'],
+        ];
+
+        if ($openInvoices > 0) {
+            $recentInv = DB::table('purchase_invoices')->where('status', 'Approved')->orderBy('created_at', 'desc')->first();
+            if ($recentInv) {
+                $attention[] = [
+                    'title' => 'Incoming Vendor Shipment',
+                    'code' => "{$recentInv->invoice_number} ({$recentInv->supplier_name})",
+                    'due' => 'Ready for warehouse receipt',
+                    'tone' => 'info',
+                    'priority' => 'P2 LOGISTICS',
+                ];
+            }
+        }
+
+        // Multi-Timeframe Data Models (Shift A Live, This Week, Month to Date)
+        $ranges = [
+            'shift' => [
+                'title' => 'Shift A (Live Compounding 06:00 - 18:00)',
+                'chartSubtitle' => 'Hourly compounding volume during Shift A (06:00 - 18:00) vs shift plan',
+                'oee' => ['availability' => 96.2, 'performance' => 90.8, 'quality' => 99.7, 'overall' => 86.4],
+                'trend' => [
+                    ['day' => '06:00', 'output' => 190, 'target' => 160, 'yield' => 99.4],
+                    ['day' => '08:00', 'output' => 280, 'target' => 250, 'yield' => 99.1],
+                    ['day' => '10:00', 'output' => 350, 'target' => 310, 'yield' => 99.6],
+                    ['day' => '12:00', 'output' => 240, 'target' => 220, 'yield' => 99.3],
+                    ['day' => '14:00', 'output' => 370, 'target' => 330, 'yield' => 99.8],
+                    ['day' => '16:00', 'output' => 260, 'target' => 230, 'yield' => 99.5],
+                    ['day' => '18:00', 'output' => 150, 'target' => 100, 'yield' => 99.7],
+                ],
+                'metrics' => [
+                    ['label' => 'Active Batches in Shift A', 'value' => (string)$activeBatches, 'detail' => 'Lines L01, L02, L04 running', 'delta' => 'All stations manned', 'deltaTone' => 'up', 'icon' => 'scale', 'tone' => 'blue', 'spark' => [40, 55, 70, 65, 80, 90, 95]],
+                    ['label' => 'Shift Compounding Volume', 'value' => '1,840 L', 'detail' => 'Target: 1,600 L (+240 L)', 'delta' => '+15% shift quota', 'deltaTone' => 'up', 'icon' => 'box', 'tone' => 'indigo', 'spark' => [20, 35, 55, 45, 75, 85, 95]],
+                    ['label' => 'Shift A Live OEE Efficiency', 'value' => '86.4%', 'detail' => 'Avail: 96% · Qual: 99.7%', 'delta' => 'Exceeding target', 'deltaTone' => 'up', 'icon' => 'sparkles', 'tone' => 'green', 'spark' => [80, 82, 85, 84, 86, 88, 86]],
+                    ['label' => 'Quarantine Lots in Bay Q01', 'value' => (string)$quarantineLots, 'detail' => 'Sampled at 08:30 by QA', 'delta' => 'Assay in progress', 'deltaTone' => 'neutral', 'icon' => 'clock', 'tone' => 'amber', 'spark' => [3, 2, 2, 1, 1, 1, 1]],
+                    ['label' => 'Hourly FEFO Lots Staged', 'value' => '6 Lots', 'detail' => 'Staged for lines L01 & L02', 'delta' => 'No stockouts', 'deltaTone' => 'up', 'icon' => 'alert', 'tone' => 'rose', 'spark' => [1, 2, 3, 4, 5, 6, 6]],
+                    ['label' => 'Floor Operators on Shift', 'value' => '18 Techs', 'detail' => 'Chemist: Elena Rossi', 'delta' => '100% attendance', 'deltaTone' => 'up', 'icon' => 'shield', 'tone' => 'purple', 'spark' => [18, 18, 18, 18, 18, 18, 18]],
+                ],
+            ],
+            'week' => [
+                'title' => 'This Week (7-Day Manufacturing Schedule)',
+                'chartSubtitle' => 'Daily compounding volume (Liters) vs target schedule across all lines',
+                'oee' => ['availability' => 94.2, 'performance' => 89.6, 'quality' => 99.4, 'overall' => 84.0],
+                'trend' => [
+                    ['day' => 'Mon', 'output' => 1420, 'target' => 1350, 'yield' => 99.1],
+                    ['day' => 'Tue', 'output' => 1680, 'target' => 1450, 'yield' => 98.8],
+                    ['day' => 'Wed', 'output' => 1840, 'target' => 1600, 'yield' => 99.4],
+                    ['day' => 'Thu', 'output' => 1620, 'target' => 1500, 'yield' => 99.2],
+                    ['day' => 'Fri', 'output' => 1950, 'target' => 1700, 'yield' => 99.7],
+                    ['day' => 'Sat', 'output' => 1290, 'target' => 1200, 'yield' => 99.0],
+                    ['day' => 'Sun', 'output' => 840,  'target' => 800,  'yield' => 99.5],
+                ],
+                'metrics' => [
+                    ['label' => 'Active Manufacturing Batches', 'value' => (string)$activeBatches, 'detail' => 'Lines L01, L02, L04 running', 'delta' => '+1 vs yesterday', 'deltaTone' => 'up', 'icon' => 'scale', 'tone' => 'blue', 'spark' => [30, 45, 60, 50, 75, 80, 95]],
+                    ['label' => 'Total Inventory Valuation', 'value' => '€' . number_format($totalValuation, 0), 'detail' => '21 items in active catalog', 'delta' => '+4.8% vs last month', 'deltaTone' => 'up', 'icon' => 'box', 'tone' => 'indigo', 'spark' => [52, 54, 58, 60, 61, 63, 65]],
+                    ['label' => 'Overall Plant OEE Efficiency', 'value' => '84.0%', 'detail' => 'Avail: 94% · Qual: 99.4%', 'delta' => 'World Class GMP', 'deltaTone' => 'up', 'icon' => 'sparkles', 'tone' => 'green', 'spark' => [78, 80, 82, 81, 83, 85, 85]],
+                    ['label' => 'Quarantine Lots in Bay Q01', 'value' => (string)$quarantineLots, 'detail' => 'Needs urgent QC sampling', 'delta' => 'Awaiting lab testing', 'deltaTone' => 'neutral', 'icon' => 'clock', 'tone' => 'amber', 'spark' => [4, 3, 2, 2, 1, 1, 1]],
+                    ['label' => 'FEFO Expiry Alerts (<60d)', 'value' => (string)$expiringCount, 'detail' => 'Expiring lots in storage', 'delta' => 'Priority staging required', 'deltaTone' => 'down', 'icon' => 'alert', 'tone' => 'rose', 'spark' => [18, 16, 15, 14, 14, 14, 14]],
+                    ['label' => 'Qualified Factory Vendors', 'value' => (string)$activeSuppliers, 'detail' => "{$openInvoices} open POs in transit", 'delta' => 'ISO 22716 certified', 'deltaTone' => 'up', 'icon' => 'shield', 'tone' => 'purple', 'spark' => [5, 5, 6, 6, 7, 7, 7]],
+                ],
+            ],
+            'month' => [
+                'title' => 'Month to Date (30-Day Plant Aggregates)',
+                'chartSubtitle' => 'Weekly cumulative output (Liters) against monthly plant manufacturing quota',
+                'oee' => ['availability' => 95.0, 'performance' => 90.8, 'quality' => 99.5, 'overall' => 85.8],
+                'trend' => [
+                    ['day' => 'Week 1', 'output' => 9850,  'target' => 9200,  'yield' => 99.0],
+                    ['day' => 'Week 2', 'output' => 10420, 'target' => 9800,  'yield' => 99.3],
+                    ['day' => 'Week 3', 'output' => 10640, 'target' => 9600,  'yield' => 99.4],
+                    ['day' => 'Week 4', 'output' => 11200, 'target' => 10500, 'yield' => 99.6],
+                    ['day' => 'Week 5', 'output' => 10800, 'target' => 10000, 'yield' => 99.5],
+                ],
+                'metrics' => [
+                    ['label' => 'Batches Manufactured MTD', 'value' => '28 Batches', 'detail' => '52,910 Liters total bulk', 'delta' => '+8.4% above quota', 'deltaTone' => 'up', 'icon' => 'scale', 'tone' => 'blue', 'spark' => [5, 11, 17, 23, 28]],
+                    ['label' => 'Material Asset Turnover MTD', 'value' => '€248,500', 'detail' => 'Inventory consumed in recipes', 'delta' => 'High rotation rate', 'deltaTone' => 'up', 'icon' => 'box', 'tone' => 'indigo', 'spark' => [45, 95, 148, 195, 248]],
+                    ['label' => 'Monthly Average Plant OEE', 'value' => '85.2%', 'detail' => 'Avail: 95% · Qual: 99.5%', 'delta' => '+1.2% vs last month', 'deltaTone' => 'up', 'icon' => 'sparkles', 'tone' => 'green', 'spark' => [82, 83, 85, 86, 85]],
+                    ['label' => 'Total QA Lots Released MTD', 'value' => '26 Lots', 'detail' => 'Zero critical recall hold', 'delta' => '100% GMP compliance', 'deltaTone' => 'up', 'icon' => 'shield', 'tone' => 'green', 'spark' => [4, 9, 15, 20, 26]],
+                    ['label' => 'FEFO Lots Consumed Safely', 'value' => '32 Lots', 'detail' => 'No expired write-offs', 'delta' => '€0.00 shelf loss', 'deltaTone' => 'up', 'icon' => 'alert', 'tone' => 'amber', 'spark' => [6, 12, 19, 26, 32]],
+                    ['label' => 'Cleared Vendor Invoices MTD', 'value' => '€54,200', 'detail' => 'Invoices processed & paid', 'delta' => 'All accounts current', 'deltaTone' => 'up', 'icon' => 'file', 'tone' => 'purple', 'spark' => [12, 22, 34, 45, 54]],
+                ],
+            ],
         ];
 
         return response()->json([
-            'metrics' => [
-                ['label' => 'Active batches on lines', 'value' => (string)$activeBatches, 'detail' => 'Running on production lines', 'delta' => 'Lines L01, L02, L04', 'icon' => 'scale', 'tone' => 'blue'],
-                ['label' => 'Lots in quarantine', 'value' => (string)$quarantineLots, 'detail' => 'Needs urgent QC sampling', 'delta' => 'Quarantine Bay Q01', 'icon' => 'clock', 'tone' => 'amber'],
-                ['label' => 'Expiring lots · FEFO alerts', 'value' => (string)$expiringCount, 'detail' => 'Expire within 60 days', 'delta' => 'Review FEFO priority', 'icon' => 'alert', 'tone' => 'rose'],
-                ['label' => 'Pending QA release approvals', 'value' => (string)$pendingQARelease, 'detail' => 'Controlled release queue', 'delta' => '1 batch waiting', 'icon' => 'shield', 'tone' => 'green'],
-            ],
+            'metrics' => $ranges['week']['metrics'],
             'lines' => $lines,
             'attention' => $attention,
+            'oee' => $ranges['week']['oee'],
+            'weeklyTrend' => $ranges['week']['trend'],
+            'ranges' => $ranges,
+            'cleanrooms' => $cleanrooms,
+            'valuationBreakdown' => [
+                'total' => $totalValuation,
+                'raw_materials' => $rawValuation,
+                'packaging' => $pkgValuation,
+                'finished_goods' => $fgValuation,
+            ],
         ]);
     }
 
@@ -67,11 +203,499 @@ class PhaseOneApiController extends Controller
     public function getItems()
     {
         $items = DB::table('items')
-            ->select('id', 'code', 'name', 'type', 'inci_name', 'technical_name', 'cas_number', 'allergens', 'unit', 'cost_per_unit')
+            ->select('id', 'code', 'name', 'type', 'inci_name', 'technical_name', 'function', 'cas_number', 'allergens', 'unit', 'cost_per_unit')
             ->orderBy('name')
-            ->get();
+            ->get()
+            ->map(function ($item) {
+                $totalStock = DB::table('lots')->where('item_id', $item->id)->sum('quantity');
+                $lotsCount = DB::table('lots')->where('item_id', $item->id)->count();
+                $item->total_stock = (float)$totalStock;
+                $item->lots_count = $lotsCount;
+                return $item;
+            });
 
         return response()->json($items);
+    }
+
+    /**
+     * Store New Master Item
+     */
+    public function storeItem(Request $request)
+    {
+        $validated = $request->validate([
+            'code' => 'required|string|unique:items,code',
+            'name' => 'required|string',
+            'type' => 'required|in:raw_material,packaging,bulk_semi_finished,finished_good',
+            'unit' => 'required|string',
+            'inci_name' => 'nullable|string',
+            'technical_name' => 'nullable|string',
+            'function' => 'nullable|string',
+            'cas_number' => 'nullable|string',
+            'allergens' => 'nullable|string',
+            'cost_per_unit' => 'nullable|numeric|min:0',
+        ]);
+
+        $id = DB::table('items')->insertGetId([
+            'code' => trim($validated['code']),
+            'name' => trim($validated['name']),
+            'type' => $validated['type'],
+            'unit' => trim($validated['unit']),
+            'inci_name' => $validated['inci_name'] ?? null,
+            'technical_name' => $validated['technical_name'] ?? null,
+            'function' => $validated['function'] ?? null,
+            'cas_number' => $validated['cas_number'] ?? null,
+            'allergens' => $validated['allergens'] ?? 'None',
+            'cost_per_unit' => $validated['cost_per_unit'] ?? 0.00,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $item = DB::table('items')->where('id', $id)->first();
+        return response()->json([
+            'success' => true,
+            'message' => "Item '{$item->name}' ({$item->code}) created successfully.",
+            'item' => $item,
+        ], 201);
+    }
+
+    /**
+     * Update Existing Master Item
+     */
+    public function updateItem(Request $request, $id)
+    {
+        $item = DB::table('items')->where('id', $id)->first();
+        if (!$item) {
+            return response()->json(['error' => 'Item not found'], 404);
+        }
+
+        $validated = $request->validate([
+            'code' => 'required|string|unique:items,code,' . $id,
+            'name' => 'required|string',
+            'type' => 'required|in:raw_material,packaging,bulk_semi_finished,finished_good',
+            'unit' => 'required|string',
+            'inci_name' => 'nullable|string',
+            'technical_name' => 'nullable|string',
+            'function' => 'nullable|string',
+            'cas_number' => 'nullable|string',
+            'allergens' => 'nullable|string',
+            'cost_per_unit' => 'nullable|numeric|min:0',
+        ]);
+
+        DB::table('items')->where('id', $id)->update([
+            'code' => trim($validated['code']),
+            'name' => trim($validated['name']),
+            'type' => $validated['type'],
+            'unit' => trim($validated['unit']),
+            'inci_name' => $validated['inci_name'] ?? null,
+            'technical_name' => $validated['technical_name'] ?? null,
+            'function' => $validated['function'] ?? null,
+            'cas_number' => $validated['cas_number'] ?? null,
+            'allergens' => $validated['allergens'] ?? 'None',
+            'cost_per_unit' => $validated['cost_per_unit'] ?? 0.00,
+            'updated_at' => now(),
+        ]);
+
+        $updated = DB::table('items')->where('id', $id)->first();
+        return response()->json([
+            'success' => true,
+            'message' => "Item '{$updated->name}' updated successfully.",
+            'item' => $updated,
+        ]);
+    }
+
+    /**
+     * Delete Master Item Completely
+     */
+    public function deleteItem($id)
+    {
+        $item = DB::table('items')->where('id', $id)->first();
+        if (!$item) {
+            return response()->json(['error' => 'Item not found'], 404);
+        }
+
+        // Clean up lots and ledger
+        $lots = DB::table('lots')->where('item_id', $id)->get();
+        foreach ($lots as $lot) {
+            DB::table('inventory_ledger')->where('lot_id', $lot->id)->delete();
+            DB::table('lots')->where('id', $lot->id)->delete();
+        }
+        DB::table('formulation_lines')->where('item_id', $id)->delete();
+        DB::table('items')->where('id', $id)->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => "Item '{$item->name}' ({$item->code}) permanently deleted.",
+        ]);
+    }
+
+    /**
+     * Get All Suppliers
+     */
+    public function getSuppliers()
+    {
+        $suppliers = DB::table('suppliers')
+            ->orderBy('name')
+            ->get()
+            ->map(function ($sup) {
+                $invoicesCount = DB::table('purchase_invoices')->where('supplier_id', $sup->id)->count();
+                $totalBilled = DB::table('purchase_invoices')->where('supplier_id', $sup->id)->sum('total_amount');
+                $sup->invoices_count = $invoicesCount;
+                $sup->total_billed = (float)$totalBilled;
+                return $sup;
+            });
+
+        return response()->json($suppliers);
+    }
+
+    /**
+     * Store New Supplier
+     */
+    public function storeSupplier(Request $request)
+    {
+        $validated = $request->validate([
+            'name' => 'required|string',
+            'code' => 'nullable|string',
+            'contact_person' => 'nullable|string',
+            'phone' => 'nullable|string',
+            'email' => 'nullable|string',
+            'address' => 'nullable|string',
+            'materials_supplied' => 'required|string',
+            'payment_terms' => 'nullable|string',
+            'tax_number' => 'nullable|string',
+            'status' => 'nullable|in:Active,Under Review,Suspended',
+            'notes' => 'nullable|string',
+        ]);
+
+        $code = !empty($validated['code']) ? trim($validated['code']) : 'SUP-' . strtoupper(substr(preg_replace('/[^a-zA-Z]/', '', $validated['name']), 0, 4)) . '-' . rand(100, 999);
+
+        if (DB::table('suppliers')->where('code', $code)->exists()) {
+            $code .= '-' . rand(10, 99);
+        }
+
+        $id = DB::table('suppliers')->insertGetId([
+            'code' => $code,
+            'name' => trim($validated['name']),
+            'contact_person' => $validated['contact_person'] ?? null,
+            'phone' => $validated['phone'] ?? null,
+            'email' => $validated['email'] ?? null,
+            'address' => $validated['address'] ?? null,
+            'materials_supplied' => $validated['materials_supplied'],
+            'payment_terms' => $validated['payment_terms'] ?? 'Net 30 Days',
+            'tax_number' => $validated['tax_number'] ?? null,
+            'status' => $validated['status'] ?? 'Active',
+            'notes' => $validated['notes'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $supplier = DB::table('suppliers')->where('id', $id)->first();
+        return response()->json([
+            'success' => true,
+            'message' => "Supplier '{$supplier->name}' ({$supplier->code}) registered successfully.",
+            'supplier' => $supplier,
+        ], 201);
+    }
+
+    /**
+     * Update Supplier
+     */
+    public function updateSupplier(Request $request, $id)
+    {
+        $supplier = DB::table('suppliers')->where('id', $id)->first();
+        if (!$supplier) {
+            return response()->json(['error' => 'Supplier not found'], 404);
+        }
+
+        $validated = $request->validate([
+            'name' => 'required|string',
+            'code' => 'required|string',
+            'contact_person' => 'nullable|string',
+            'phone' => 'nullable|string',
+            'email' => 'nullable|string',
+            'address' => 'nullable|string',
+            'materials_supplied' => 'required|string',
+            'payment_terms' => 'nullable|string',
+            'tax_number' => 'nullable|string',
+            'status' => 'nullable|in:Active,Under Review,Suspended',
+            'notes' => 'nullable|string',
+        ]);
+
+        DB::table('suppliers')->where('id', $id)->update([
+            'name' => trim($validated['name']),
+            'code' => trim($validated['code']),
+            'contact_person' => $validated['contact_person'] ?? null,
+            'phone' => $validated['phone'] ?? null,
+            'email' => $validated['email'] ?? null,
+            'address' => $validated['address'] ?? null,
+            'materials_supplied' => $validated['materials_supplied'],
+            'payment_terms' => $validated['payment_terms'] ?? 'Net 30 Days',
+            'tax_number' => $validated['tax_number'] ?? null,
+            'status' => $validated['status'] ?? 'Active',
+            'notes' => $validated['notes'] ?? null,
+            'updated_at' => now(),
+        ]);
+
+        $updated = DB::table('suppliers')->where('id', $id)->first();
+        return response()->json([
+            'success' => true,
+            'message' => "Supplier '{$updated->name}' updated successfully.",
+            'supplier' => $updated,
+        ]);
+    }
+
+    /**
+     * Delete Supplier
+     */
+    public function deleteSupplier($id)
+    {
+        $supplier = DB::table('suppliers')->where('id', $id)->first();
+        if (!$supplier) {
+            return response()->json(['error' => 'Supplier not found'], 404);
+        }
+
+        DB::table('purchase_invoices')->where('supplier_id', $id)->update(['supplier_id' => null]);
+        DB::table('suppliers')->where('id', $id)->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => "Supplier '{$supplier->name}' deleted permanently.",
+        ]);
+    }
+
+    /**
+     * Get All Purchase Invoices / Orders
+     */
+    public function getInvoices()
+    {
+        $invoices = DB::table('purchase_invoices')
+            ->orderBy('created_at', 'desc')
+            ->get()
+            ->map(function ($inv) {
+                $items = DB::table('purchase_invoice_items')->where('purchase_invoice_id', $inv->id)->get();
+                $inv->items = $items;
+                $inv->items_count = $items->count();
+                return $inv;
+            });
+
+        return response()->json($invoices);
+    }
+
+    /**
+     * Store Purchase Invoice / PO
+     */
+    public function storeInvoice(Request $request)
+    {
+        $validated = $request->validate([
+            'invoice_number' => 'nullable|string',
+            'supplier_id' => 'required|exists:suppliers,id',
+            'invoice_date' => 'required|date',
+            'due_date' => 'nullable|date',
+            'status' => 'nullable|in:Draft,Approved,Received,Paid',
+            'currency' => 'nullable|string',
+            'tax_percent' => 'nullable|numeric|min:0',
+            'notes' => 'nullable|string',
+            'items' => 'required|array|min:1',
+            'items.*.item_id' => 'required|exists:items,id',
+            'items.*.quantity' => 'required|numeric|min:0.01',
+            'items.*.unit_price' => 'required|numeric|min:0',
+        ]);
+
+        $supplier = DB::table('suppliers')->where('id', $validated['supplier_id'])->first();
+        $invoiceNum = !empty($validated['invoice_number']) ? trim($validated['invoice_number']) : 'INV-' . date('Y') . '-' . rand(1000, 9999);
+
+        $subtotal = 0;
+        foreach ($validated['items'] as $it) {
+            $subtotal += ($it['quantity'] * $it['unit_price']);
+        }
+        $taxPercent = isset($validated['tax_percent']) ? (float)$validated['tax_percent'] : 14.00;
+        $taxAmount = round(($subtotal * $taxPercent) / 100, 2);
+        $totalAmount = round($subtotal + $taxAmount, 2);
+
+        $invId = DB::table('purchase_invoices')->insertGetId([
+            'invoice_number' => $invoiceNum,
+            'supplier_id' => $supplier->id,
+            'supplier_name' => $supplier->name,
+            'invoice_date' => $validated['invoice_date'],
+            'due_date' => $validated['due_date'] ?? null,
+            'status' => $validated['status'] ?? 'Approved',
+            'subtotal' => $subtotal,
+            'tax_percent' => $taxPercent,
+            'tax_amount' => $taxAmount,
+            'total_amount' => $totalAmount,
+            'currency' => $validated['currency'] ?? '€',
+            'notes' => $validated['notes'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        foreach ($validated['items'] as $itemData) {
+            $masterItem = DB::table('items')->where('id', $itemData['item_id'])->first();
+            $lineTotal = round($itemData['quantity'] * $itemData['unit_price'], 2);
+
+            DB::table('purchase_invoice_items')->insert([
+                'purchase_invoice_id' => $invId,
+                'item_id' => $masterItem->id,
+                'item_code' => $masterItem->code,
+                'item_name' => $masterItem->name,
+                'unit' => $masterItem->unit,
+                'quantity' => $itemData['quantity'],
+                'unit_price' => $itemData['unit_price'],
+                'total_price' => $lineTotal,
+                'received_status' => false,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $created = DB::table('purchase_invoices')->where('id', $invId)->first();
+        $created->items = DB::table('purchase_invoice_items')->where('purchase_invoice_id', $invId)->get();
+
+        return response()->json([
+            'success' => true,
+            'message' => "Invoice / PO '{$invoiceNum}' generated successfully for {$supplier->name}.",
+            'invoice' => $created,
+        ], 201);
+    }
+
+    /**
+     * Delete Invoice
+     */
+    public function deleteInvoice($id)
+    {
+        $inv = DB::table('purchase_invoices')->where('id', $id)->first();
+        if (!$inv) {
+            return response()->json(['error' => 'Invoice not found'], 404);
+        }
+
+        DB::table('purchase_invoice_items')->where('purchase_invoice_id', $id)->delete();
+        DB::table('purchase_invoices')->where('id', $id)->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => "Invoice '{$inv->invoice_number}' permanently deleted.",
+        ]);
+    }
+
+    /**
+     * Receive Invoice Items directly into Warehouse Inventory Lots (Goods Receipt)
+     */
+    public function receiveInvoice($id, Request $request)
+    {
+        $inv = DB::table('purchase_invoices')->where('id', $id)->first();
+        if (!$inv) {
+            return response()->json(['error' => 'Invoice not found'], 404);
+        }
+
+        $items = DB::table('purchase_invoice_items')->where('purchase_invoice_id', $id)->get();
+        if ($items->isEmpty()) {
+            return response()->json(['error' => 'Invoice has no items to receive'], 422);
+        }
+
+        $createdLots = [];
+        $performedBy = $request->input('performed_by', 'Warehouse Receiving Specialist');
+
+        foreach ($items as $line) {
+            $masterItem = DB::table('items')->where('id', $line->item_id)->first();
+            $prefix = strtoupper(substr(preg_replace('/[^a-zA-Z]/', '', $masterItem->name ?? 'MAT'), 0, 3));
+            if (strlen($prefix) < 3) $prefix = 'MAT';
+            $lotNumber = $prefix . '-' . date('ymd') . '-' . rand(10, 99);
+
+            // Determine rack based on item type
+            $location = 'WH-RAW-A01';
+            if ($masterItem && $masterItem->type === 'packaging') {
+                $location = 'WH-PKG-B01';
+            } elseif ($masterItem && $masterItem->type === 'finished_good') {
+                $location = 'WH-FG-D01';
+            }
+
+            $expiryDate = Carbon::now()->addYears(2)->toDateString();
+
+            $lotId = DB::table('lots')->insertGetId([
+                'lot_number' => $lotNumber,
+                'item_id' => $line->item_id,
+                'status' => 'Quarantine', // ISO 22716 standard: all incoming goods enter quarantine
+                'quantity' => $line->quantity,
+                'unit' => $line->unit,
+                'storage_location' => $location,
+                'expiry_date' => $expiryDate,
+                'supplier_name' => $inv->supplier_name,
+                'source_document' => $inv->invoice_number,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            DB::table('inventory_ledger')->insert([
+                'lot_id' => $lotId,
+                'transaction_type' => 'receipt',
+                'quantity_change' => $line->quantity,
+                'running_balance' => $line->quantity,
+                'source_document' => $inv->invoice_number,
+                'reason' => "Goods receipt from invoice {$inv->invoice_number} ({$inv->supplier_name})",
+                'performed_by' => $performedBy,
+                'created_at' => now(),
+            ]);
+
+            DB::table('purchase_invoice_items')->where('id', $line->id)->update([
+                'received_status' => true,
+                'updated_at' => now(),
+            ]);
+
+            $createdLots[] = [
+                'lot_id' => $lotId,
+                'lot_number' => $lotNumber,
+                'item_name' => $line->item_name,
+                'quantity' => $line->quantity,
+                'unit' => $line->unit,
+                'storage_location' => $location,
+            ];
+        }
+
+        // Update invoice status to 'Received'
+        DB::table('purchase_invoices')->where('id', $id)->update([
+            'status' => 'Received',
+            'updated_at' => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Invoice {$inv->invoice_number} received into warehouse! " . count($createdLots) . " inventory lot(s) generated in Quarantine bay.",
+            'created_lots' => $createdLots,
+            'invoice_status' => 'Received',
+        ]);
+    }
+
+    /**
+     * Procurement & Materials Financial Valuation
+     */
+    public function getProcurementValuation()
+    {
+        $items = DB::table('items')
+            ->select('id', 'code', 'name', 'type', 'unit', 'cost_per_unit')
+            ->orderBy('name')
+            ->get()
+            ->map(function ($it) {
+                $qty = (float)DB::table('lots')->where('item_id', $it->id)->sum('quantity');
+                $cost = (float)$it->cost_per_unit;
+                $valuation = round($qty * $cost, 2);
+
+                $it->stock_qty = $qty;
+                $it->cost = $cost;
+                $it->valuation = $valuation;
+                return $it;
+            });
+
+        $totalValuation = $items->sum('valuation');
+        $rawMaterialsValuation = $items->where('type', 'raw_material')->sum('valuation');
+        $packagingValuation = $items->where('type', 'packaging')->sum('valuation');
+        $finishedGoodsValuation = $items->where('type', 'finished_good')->sum('valuation');
+
+        return response()->json([
+            'total_valuation' => (float)$totalValuation,
+            'raw_materials_valuation' => (float)$rawMaterialsValuation,
+            'packaging_valuation' => (float)$packagingValuation,
+            'finished_goods_valuation' => (float)$finishedGoodsValuation,
+            'items' => $items,
+        ]);
     }
 
     /**
@@ -198,6 +822,94 @@ class PhaseOneApiController extends Controller
         return response()->json([
             'success' => true,
             'message' => "Lot {$lot->lot_number} successfully moved to {$newLocation}",
+        ]);
+    }
+
+    /**
+     * Update Lot Details, Quantity / Weight, Location, Status
+     */
+    public function updateLot(Request $request, $id)
+    {
+        $lot = DB::table('lots')->where('id', $id)->first();
+        if (!$lot) {
+            return response()->json(['error' => 'Lot not found'], 404);
+        }
+
+        $validated = $request->validate([
+            'quantity' => 'required|numeric|min:0',
+            'storage_location' => 'nullable|string',
+            'expiry_date' => 'nullable|date',
+            'status' => 'nullable|in:Quarantine,Approved,Rejected',
+            'supplier_name' => 'nullable|string',
+            'source_document' => 'nullable|string',
+            'reason' => 'nullable|string',
+        ]);
+
+        $oldQty = (float)$lot->quantity;
+        $newQty = (float)$validated['quantity'];
+        $qtyDiff = round($newQty - $oldQty, 3);
+        $reason = !empty($validated['reason']) ? $validated['reason'] : 'Manual stock / weight adjustment';
+
+        $updateData = [
+            'quantity' => $newQty,
+            'updated_at' => now(),
+        ];
+        if (isset($validated['storage_location'])) {
+            $updateData['storage_location'] = $validated['storage_location'];
+        }
+        if (array_key_exists('expiry_date', $validated)) {
+            $updateData['expiry_date'] = $validated['expiry_date'];
+        }
+        if (isset($validated['status'])) {
+            $updateData['status'] = $validated['status'];
+        }
+        if (isset($validated['supplier_name'])) {
+            $updateData['supplier_name'] = $validated['supplier_name'];
+        }
+        if (isset($validated['source_document'])) {
+            $updateData['source_document'] = $validated['source_document'];
+        }
+
+        DB::table('lots')->where('id', $id)->update($updateData);
+
+        // Record adjustment in the immutable ledger
+        if (abs($qtyDiff) > 0.0001 || !empty($validated['reason'])) {
+            $sign = $qtyDiff >= 0 ? '+' : '';
+            DB::table('inventory_ledger')->insert([
+                'lot_id' => $lot->id,
+                'transaction_type' => 'stock_adjustment',
+                'quantity_change' => $qtyDiff,
+                'running_balance' => $newQty,
+                'source_document' => 'ADJ-' . date('ymd') . '-' . rand(100, 999),
+                'user_name' => 'Inventory Controller',
+                'notes' => "Stock / Weight adjustment ({$sign}{$qtyDiff} {$lot->unit}). Reason: {$reason}",
+                'created_at' => now(),
+            ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "Lot {$lot->lot_number} updated successfully. Quantity set to {$newQty} {$lot->unit}.",
+        ]);
+    }
+
+    /**
+     * Delete Lot Completely (Hard Delete with Ledger Cleanup)
+     */
+    public function deleteLot($id)
+    {
+        $lot = DB::table('lots')->where('id', $id)->first();
+        if (!$lot) {
+            return response()->json(['error' => 'Lot not found'], 404);
+        }
+
+        $lotNumber = $lot->lot_number;
+        DB::table('inventory_ledger')->where('lot_id', $id)->delete();
+        DB::table('lots')->where('id', $id)->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => "Lot {$lotNumber} permanently deleted from inventory.",
         ]);
     }
 
@@ -1542,6 +2254,46 @@ class PhaseOneApiController extends Controller
                 'badgeTone' => $s->status === 'Approved' ? 'approved' : 'warning',
                 'target' => 'quality',
                 'payload' => $s->sample_number,
+            ];
+        }
+
+        // 6. Approved Suppliers & Vendors (Procurement Link)
+        $suppliers = DB::table('suppliers')
+            ->where('name', 'like', "%{$q}%")
+            ->orWhere('code', 'like', "%{$q}%")
+            ->orWhere('materials_supplied', 'like', "%{$q}%")
+            ->orWhere('contact_person', 'like', "%{$q}%")
+            ->limit(4)
+            ->get();
+
+        foreach ($suppliers as $sup) {
+            $results[] = [
+                'type' => 'supplier',
+                'title' => "Vendor: {$sup->name} ({$sup->code})",
+                'subtitle' => "Supplies: {$sup->materials_supplied} · Contact: {$sup->contact_person} · Terms: {$sup->payment_terms}",
+                'badge' => $sup->status,
+                'badgeTone' => $sup->status === 'Active' ? 'approved' : 'warning',
+                'target' => 'procurement',
+                'payload' => $sup->name,
+            ];
+        }
+
+        // 7. Purchase Invoices & Orders (Procurement Link)
+        $invoices = DB::table('purchase_invoices')
+            ->where('invoice_number', 'like', "%{$q}%")
+            ->orWhere('supplier_name', 'like', "%{$q}%")
+            ->limit(4)
+            ->get();
+
+        foreach ($invoices as $inv) {
+            $results[] = [
+                'type' => 'invoice',
+                'title' => "PO/Invoice {$inv->invoice_number} · {$inv->supplier_name}",
+                'subtitle' => "Date: {$inv->invoice_date} · Total: €" . number_format($inv->total_amount, 2) . " · Status: {$inv->status}",
+                'badge' => $inv->status,
+                'badgeTone' => $inv->status === 'Paid' ? 'approved' : ($inv->status === 'Received' ? 'info' : 'warning'),
+                'target' => 'procurement',
+                'payload' => $inv->invoice_number,
             ];
         }
 
